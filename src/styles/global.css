@@ -1,0 +1,51 @@
+:root {
+  /* 左右分栏比例（可调） */
+  --split-left: 40%;
+
+  /* 颜色 */
+  --color-bg: #f4f5f7;
+  --color-panel: #ffffff;
+  --color-border: #e4e7eb;
+  --color-text: #1f2329;
+  --color-text-soft: #646a73;
+  --color-primary: #4f8cff;
+  --color-primary-disabled: #a9c7ff;
+  --color-user-bubble: #4f8cff;
+  --color-assistant-bg: #f7f8fa;
+
+  /* 圆角 / 间距 */
+  --radius: 8px;
+  --gap: 12px;
+
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Roboto, Helvetica, Arial, sans-serif;
+  color: var(--color-text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+pre {
+  margin: 0;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
