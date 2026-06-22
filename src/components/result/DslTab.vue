@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { currentExtractedDSL } from '@/state/sceneStore'
+import CopyButton from './CopyButton.vue'
 
 /**
  * DSL 页：展示从运行后场景提取的衍生数据 currentExtractedDSL。
- * 只读，不反向控制场景（Code-first）。
+ * 只读，不反向控制场景（Code-first）。右上角提供一键复制（有 DSL 时）。
  * 若提取存在告警，顶部展示一行提示。
  */
 const json = computed(() =>
@@ -19,6 +20,7 @@ const warningCount = computed(() => currentExtractedDSL.value?.warnings?.length 
     <div v-if="warningCount > 0" class="warning-bar">
       ⚠ 提取到 {{ warningCount }} 个告警（缺 id / 缺 type / 未识别几何或材质等），详见 JSON 中各节点 warnings。
     </div>
+    <CopyButton v-if="json" :text="json" />
     <pre v-if="json" class="code-block">{{ json }}</pre>
     <pre v-else class="code-block code-block--empty">（尚未提取 DSL）</pre>
   </div>
@@ -26,15 +28,18 @@ const warningCount = computed(() => currentExtractedDSL.value?.warnings?.length 
 
 <style scoped>
 .dsl-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
   background: #1f2329;
 }
 
 .warning-bar {
-  position: sticky;
-  top: 0;
-  padding: 8px 16px;
+  flex: 0 0 auto;
+  /* 右侧留出空间避免文字压到复制按钮 */
+  padding: 8px 90px 8px 16px;
   background: #3a2e16;
   color: #ffd591;
   font-size: 13px;
@@ -43,7 +48,10 @@ const warningCount = computed(() => currentExtractedDSL.value?.warnings?.length 
 }
 
 .code-block {
+  flex: 1 1 auto;
+  margin: 0;
   padding: 16px;
+  overflow: auto;
   color: #e6e8eb;
   font-size: 13px;
   line-height: 1.6;
