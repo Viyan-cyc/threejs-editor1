@@ -1,4 +1,5 @@
 import type { ChatMessage } from '@/types/llm'
+import type { ComponentSummary } from '@/scene-components/registry'
 
 /**
  * LLM 请求提示词组装（system / developer / user 三层，对齐 docs/05）。
@@ -35,17 +36,24 @@ const USERDATA_SPEC = `【Object3D.userData 标注规范（docs/04）】
 - 不需要进 DSL 的辅助对象（如参考网格）设 userData = { dslIgnore: true }。
 - 不要把内部状态藏在闭包/模块变量里；所有要被记录的状态都在场景树的 userData 与标准属性上。`
 
+const COMPONENT_SPEC = `【自定义组件使用规范】
+- 当用户需求与某已注册组件匹配时（如"货架"→Shelf），【优先使用该组件，而不是自己拼 low-poly】。
+- 在 createScene 内通过 \`ctx.components.<ComponentType>(params)\` 创建对象（返回一个 THREE.Object3D），例如：const shelf = ctx.components.Shelf({ levels: 4 })。
+- 给组件根 Object3D 设置 userData = { id, name, type: 'component', componentType: <ComponentType>, params: <你传入的 params 对象>, description: <一句话简述> }。
+- 把组件当作黑盒：只调用它，不要重建其内部结构、也不要给它的内部子件单独写 userData。
+- 若不匹配任何已注册组件，再用 primitive / lowPolyComposite 自行拼装。`
+
 const SAFETY = `【安全红线（docs/05 §7）】
-sceneCode 会被沙箱执行。禁止包含：eval / new Function / fetch / XMLHttpRequest / WebSocket / 动态 import / Worker / localStorage / sessionStorage / indexedDB / cookie / parent / top / opener / location / postMessage / window / document / globalThis / self / navigator / crypto / setTimeout / setInterval。
-不要发网络请求；不要访问顶层敏感对象；只构建场景对象并返回。`
+sceneCode 会在沙箱内执行。禁止包含：eval / new Function / 动态 import() / fetch / XMLHttpRequest / WebSocket / EventSource / sendBeacon / Worker / localStorage / sessionStorage / indexedDB / postMessage / setTimeout / setInterval。
+允许用 document.createElement('canvas') 等做 CanvasTexture；其余构建场景对象并返回 { scene, camera } 即可。不要发网络请求。`
 
 const OUTPUT_FORMAT = `【输出格式】
 你必须返回一个严格的 JSON 对象（response_format=json_object），字段：
-- responseText: 给用户的自然语言回复（必填）
-- reasoningSummary: 思考摘要，精简，不要贴完整推理（必填）
-- plan: 执行计划（必填）
-- modificationSummary: 本轮修改摘要，按 id 描述增/改/删/移（必填）
-- sceneCode: 新的完整 createScene(THREE, ctx) 代码字符串（必填）
+- responseText: 给用户的自然语言回复
+- reasoningSummary: 思考摘要，精简，不要贴完整推理
+- plan: 执行计划
+- modificationSummary: 本轮修改摘要，按 id 描述增/改/删/移
+- sceneCode: 新的完整 createScene(THREE, ctx) 代码字符串（【必填】，核心产物）
 - expectedObjects: [{id, name?, type?, action:'create'|'update'|'delete'|'move'}]（必填）
 - usedAssets?: {components:[{name,props?}], externalModels:[{name?,url,format?}]}
 - warnings?: string[]（风险/降级/无法满足）
@@ -58,8 +66,8 @@ export function buildSystemMessage(): ChatMessage {
 }
 
 export interface DeveloperContext {
-  /** 可用自定义组件（当前为空数组） */
-  components: Array<{ name: string; description: string }>
+  /** 可用自定义组件清单（来自 registry） */
+  components: ComponentSummary[]
   /** 可用外部模型能力（当前为空数组） */
   externalModels: Array<{ name: string; format: string }>
 }
@@ -67,10 +75,11 @@ export interface DeveloperContext {
 export function buildDeveloperMessage(ctx: DeveloperContext): ChatMessage {
   const lines: string[] = []
   lines.push(CODE_SPEC)
+  lines.push(COMPONENT_SPEC)
   lines.push(USERDATA_SPEC)
   lines.push(SAFETY)
-  lines.push('【能力范围】primitives / groups / lowPolyComposite / standardMaterials / animations：允许。customShaders / textures：暂不允许。')
-  lines.push(`【可用组件 registry】${ctx.components.length ? JSON.stringify(ctx.components) : '（当前为空）'}`)
+  lines.push('【能力范围】primitives / groups / lowPolyComposite / standardMaterials / textures(CanvasTexture) / animations：允许。customShaders：暂不允许。')
+  lines.push(`【可用组件 registry】${ctx.components.length ? JSON.stringify(ctx.components, null, 2) : '（当前为空，不匹配时用 primitive/lowPolyComposite 自行拼装）'}`)
   lines.push(`【可用外部模型能力】${ctx.externalModels.length ? JSON.stringify(ctx.externalModels) : '（当前为空）'}`)
   lines.push(OUTPUT_FORMAT)
   return { role: 'developer', content: lines.join('\n\n') }

@@ -112,6 +112,8 @@ export interface DslObject extends DslTransform {
   visible?: boolean
   /** 自定义元信息（由提取器/前端刻意保留；非 userData 原样回显） */
   metadata?: Record<string, unknown>
+  /** component 专用：描述 */
+  description?: string
   warnings?: DslWarningCode[]
   children?: DslObject[]
   /** primitive 专用 */

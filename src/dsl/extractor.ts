@@ -184,21 +184,30 @@ function readObjectNode(node: SnapshotNode, ctx: ExtractContext): DslObject | nu
   }
   if (node.visible === false) dslNode.visible = false
 
-  if (node.isMesh) {
-    const geometry = node.geometry
-      ? readGeometry(node.geometry.type, node.geometry.parameters, warnings)
-      : undefined
-    if (geometry) dslNode.geometry = geometry
-    const material = readMaterial(node.material, warnings)
-    if (material) dslNode.material = material
-  }
+  if (type === 'component') {
+    // 组件节点：黑盒，只记录 componentType/params/description，不递归内部子件
+    if (typeof ud?.componentType === 'string') dslNode.component = ud.componentType
+    if (ud?.params !== undefined && typeof ud.params === 'object') {
+      dslNode.props = ud.params as Record<string, unknown>
+    }
+    if (typeof ud?.description === 'string') dslNode.description = ud.description
+  } else {
+    if (node.isMesh) {
+      const geometry = node.geometry
+        ? readGeometry(node.geometry.type, node.geometry.parameters, warnings)
+        : undefined
+      if (geometry) dslNode.geometry = geometry
+      const material = readMaterial(node.material, warnings)
+      if (material) dslNode.material = material
+    }
 
-  const children: DslObject[] = []
-  for (const child of node.children) {
-    const childNode = readObjectNode(child, ctx)
-    if (childNode) children.push(childNode)
+    const children: DslObject[] = []
+    for (const child of node.children) {
+      const childNode = readObjectNode(child, ctx)
+      if (childNode) children.push(childNode)
+    }
+    if (children.length > 0) dslNode.children = children
   }
-  if (children.length > 0) dslNode.children = children
 
   if (warnings.length > 0) {
     dslNode.warnings = warnings

@@ -7,6 +7,8 @@
  * 安全：iframe sandbox="allow-scripts"（无 allow-same-origin）；
  * CSP 禁网络(connect-src 'none')，仅放行 three CDN 与执行所需的 unsafe-eval/inline。
  */
+import { componentBootstrapSource } from '@/scene-components/registry'
+
 export function buildSandboxRuntimeHtml(): string {
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -28,8 +30,11 @@ export function buildSandboxRuntimeHtml(): string {
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+// 组件工厂 bootstrap：在 THREE 作用域构建 ctx.components（见 registry.componentBootstrapSource）
+${componentBootstrapSource()}
+
 const host = parent;
-let renderer = null, controls = null, currentScene = null, raf = 0, resizeHandler = null;
+let renderer = null, controls = null, currentScene = null, currentCamera = null, raf = 0, resizeHandler = null;
 
 function cloneSimple(obj) {
   const out = {};
@@ -87,9 +92,30 @@ function snapshot(scene, camera) {
   };
 }
 
-function disposeCurrent() {
-  if (raf) cancelAnimationFrame(raf); raf = 0;
-  if (resizeHandler) { removeEventListener('resize', resizeHandler); resizeHandler = null; }
+// 渲染循环：渲染当前 currentScene/currentCamera（切换场景时自动跟进）
+function loop() {
+  raf = requestAnimationFrame(loop);
+  if (controls) controls.update();
+  if (renderer && currentScene && currentCamera) renderer.render(currentScene, currentCamera);
+}
+
+// 确保 renderer/canvas/resize/loop 存在（跨多次 run 复用，不重复创建）
+function ensureRenderer() {
+  if (renderer) return;
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+  resizeHandler = function () {
+    if (currentCamera) { currentCamera.aspect = innerWidth / innerHeight; currentCamera.updateProjectionMatrix(); }
+    if (renderer) renderer.setSize(innerWidth, innerHeight);
+  };
+  addEventListener('resize', resizeHandler);
+  raf = requestAnimationFrame(loop);
+}
+
+// 仅回收场景对象与 controls（保留 renderer，供下一次 run 复用）
+function disposeScene() {
   if (controls) { controls.dispose(); controls = null; }
   if (currentScene) {
     currentScene.traverse(function (o) {
@@ -100,6 +126,14 @@ function disposeCurrent() {
     });
     currentScene = null;
   }
+  currentCamera = null;
+}
+
+// 完全销毁（仅 'dispose' 消息用）
+function disposeCurrent() {
+  if (raf) cancelAnimationFrame(raf); raf = 0;
+  if (resizeHandler) { removeEventListener('resize', resizeHandler); resizeHandler = null; }
+  disposeScene();
   if (renderer) {
     renderer.dispose();
     if (renderer.domElement && renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
@@ -108,41 +142,34 @@ function disposeCurrent() {
 }
 
 function run(code, runId) {
+  // 关键：先构建新场景，成功才切换并回收旧的；失败则原样保留旧场景（不黑屏）
+  let newScene, newCamera;
   try {
-    disposeCurrent();
-    // 在沙箱内执行 LLM 代码字符串：定义 createScene 并调用（隔离由 sandbox 保证）
+    const ctx = { components: __buildComponents(THREE) };
     const build = new Function('THREE', 'ctx', String(code) + '\\n;return createScene(THREE, ctx);');
-    const built = build(THREE, {});
-    const scene = built.scene;
-    const camera = built.camera;
-    if (!scene || !camera) throw new Error('createScene 未返回 { scene, camera }');
-    currentScene = scene;
-
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.setSize(innerWidth, innerHeight);
-    document.body.appendChild(renderer.domElement);
-
-    controls = new OrbitControls(camera, renderer.domElement);
-    const t = (camera.userData && camera.userData.target) || [0, 0, 0];
-    controls.target.set(t[0], t[1], t[2]);
-    controls.enableDamping = true;
-
-    resizeHandler = function () {
-      camera.aspect = innerWidth / innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(innerWidth, innerHeight);
-    };
-    addEventListener('resize', resizeHandler);
-
-    function loop() { raf = requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); }
-    raf = requestAnimationFrame(loop);
-
-    host.postMessage({ type: 'ready', runId: runId, snapshot: snapshot(scene, camera) }, '*');
+    const built = build(THREE, ctx);
+    newScene = built.scene;
+    newCamera = built.camera;
+    if (!newScene || !newCamera) throw new Error('createScene 未返回 { scene, camera }');
   } catch (err) {
-    disposeCurrent();
-    host.postMessage({ type: 'error', runId: runId, message: (err && err.message) || String(err), stack: (err && err.stack) || '' }, '*');
+    // 失败：保留旧场景与渲染，不黑屏；仅回传错误
+    var errName = (err && err.name) ? (err.name + ': ') : '';
+    var errMsg = err ? (errName + (err.message || String(err))) : String(err);
+    host.postMessage({ type: 'error', runId: runId, message: errMsg, stack: (err && err.stack) || '' }, '*');
+    return;
   }
+
+  // 成功：切换到新场景（回收旧场景对象，复用 renderer）
+  disposeScene();
+  currentScene = newScene;
+  currentCamera = newCamera;
+  ensureRenderer();
+  controls = new OrbitControls(newCamera, renderer.domElement);
+  const t = (newCamera.userData && newCamera.userData.target) || [0, 0, 0];
+  controls.target.set(t[0], t[1], t[2]);
+  controls.enableDamping = true;
+
+  host.postMessage({ type: 'ready', runId: runId, snapshot: snapshot(newScene, newCamera) }, '*');
 }
 
 window.addEventListener('message', function (e) {

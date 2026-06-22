@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ChatMessage } from '@/types'
+import { formatDuration } from '@/utils/duration'
 
 defineProps<{ message: ChatMessage }>()
 </script>
@@ -35,6 +36,10 @@ defineProps<{ message: ChatMessage }>()
 
     <div v-if="message.error" class="alerts alerts--error">
       ✕ 运行失败：{{ message.error }}（已保留上一版场景）
+    </div>
+
+    <div v-if="message.generationMs != null" class="meta">
+      ⏱ 思考总时长 {{ formatDuration(message.generationMs) }}
     </div>
   </article>
 </template>
@@ -112,5 +117,12 @@ defineProps<{ message: ChatMessage }>()
   background: #fff1f0;
   color: #b3261e;
   border: 1px solid #ffccc7;
+}
+
+.meta {
+  font-size: 12px;
+  color: var(--color-text-soft);
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
 }
 </style>

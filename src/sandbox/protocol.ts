@@ -65,28 +65,30 @@ export type RunResult = { ok: true; snapshot: SceneSnapshot } | { ok: false; err
 
 /**
  * 代码静态检查（预检，主应用侧）。命中禁用模式则不送入 iframe，直接报错。
- * 这是第一道防线；sandbox 隔离是兜底。后续可升级为 AST。
+ *
+ * 设计原则：只拦截"既危险、又绝不可能出现在正常 Three.js 场景代码里"的模式，
+ * 避免误杀合法写法。真正的隔离由 sandbox iframe(allow-scripts, 无 same-origin)
+ * + CSP(connect-src 'none')兜底——它们已使 parent/top/document/storage/网络等
+ * 访问失效，故这些词不放进黑名单（否则会误杀 obj.parent、变量 top、
+ * document.createElement('canvas') 画 CanvasTexture 等合法用法）。
+ *
+ * 后续可升级为 AST。
  */
 const FORBIDDEN: Array<{ label: string; re: RegExp }> = [
   { label: 'eval', re: /\beval\s*\(/ },
   { label: 'Function', re: /\bnew\s+Function\b|\bFunction\s*\(/ },
+  { label: '动态import', re: /\bimport\s*\(/ },
   { label: 'fetch', re: /\bfetch\s*\(/ },
   { label: 'XMLHttpRequest', re: /\bXMLHttpRequest\b/ },
   { label: 'WebSocket', re: /\bWebSocket\b/ },
   { label: 'EventSource', re: /\bEventSource\b/ },
   { label: 'sendBeacon', re: /\bsendBeacon\b/ },
-  { label: '动态import', re: /\bimport\s*\(/ },
   { label: 'Worker', re: /\bWorker\b|SharedWorker|ServiceWorker|importScripts/ },
+  { label: 'postMessage', re: /\bpostMessage\b/ },
   { label: 'localStorage', re: /\blocalStorage\b/ },
   { label: 'sessionStorage', re: /\bsessionStorage\b/ },
   { label: 'indexedDB', re: /\bindexedDB\b/ },
-  { label: 'cookie', re: /\bcookie\b/ },
-  { label: 'parent/top/opener', re: /\b(parent|top|opener|frames)\b/ },
-  { label: 'location/history', re: /\b(location|history)\b/ },
-  { label: 'postMessage', re: /\bpostMessage\b/ },
-  { label: 'window/document/globalThis', re: /\b(window|document|globalThis|self)\b/ },
-  { label: 'navigator/crypto', re: /\b(navigator|crypto)\b/ },
-  { label: 'setTimeout/setInterval(字符串)', re: /\b(setTimeout|setInterval)\s*\(/ },
+  { label: 'setTimeout/setInterval', re: /\b(setTimeout|setInterval)\s*\(/ },
 ]
 
 export function checkSceneCode(code: string): string[] {

@@ -3,6 +3,7 @@ import type { DslSnapshot } from '@/types'
 import { extractDslFromSnapshot } from '@/dsl/extractor'
 import { checkSceneCode } from '@/sandbox/protocol'
 import { SceneSandboxHost } from '@/sandbox/SceneSandboxHost'
+import { findUnknownComponentReferences } from '@/scene-components/registry'
 
 /**
  * Code-first 执行引擎（sceneStore）—— 沙箱版。
@@ -54,6 +55,15 @@ export async function runSceneCode(code: string): Promise<ApplyResult> {
   const violations = checkSceneCode(code)
   if (violations.length > 0) {
     const error = `代码含禁用能力：${violations.join('、')}`
+    sceneStatus.value = 'error'
+    currentError.value = error
+    return { ok: false, error }
+  }
+
+  // 1b) 组件引用预检：sceneCode 引用了未注册的组件 → 不运行、保留上一版
+  const unknownComponents = findUnknownComponentReferences(code)
+  if (unknownComponents.length > 0) {
+    const error = `sceneCode 引用了未注册的组件：${unknownComponents.join('、')}`
     sceneStatus.value = 'error'
     currentError.value = error
     return { ok: false, error }

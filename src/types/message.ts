@@ -33,6 +33,8 @@ export interface AssistantMessage {
   warnings?: string[]
   /** 运行/修改失败提示（出现时表示未应用、已保留上一版） */
   error?: string
+  /** 本轮生成总耗时（ms，含调用/校验/沙箱运行/自修复）；用于持久展示"思考总时长" */
+  generationMs?: number
   createdAt: number
 }
 

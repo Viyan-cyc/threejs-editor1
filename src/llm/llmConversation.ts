@@ -1,13 +1,14 @@
 import type { AssistantMessage, ChatMessage } from '@/types'
 import type { ChatMessage as LlmChatMessage } from '@/types/llm'
 import { uid } from '@/utils/id'
-import { callLlm, getLlmConfig, isLlmConfigured } from '@/llm/config'
+import { callLlmStream, getLlmConfig, isLlmConfigured } from '@/llm/config'
 import {
   buildDeveloperMessage,
   buildSystemMessage,
   buildUserMessage,
 } from '@/llm/prompts'
 import { parseAndValidate } from '@/llm/validate'
+import { getComponentSummary } from '@/scene-components/registry'
 import { currentExtractedDSL, currentSceneCode, runSceneCode } from '@/state/sceneStore'
 
 /**
@@ -32,6 +33,21 @@ function summarizeHistory(history: ChatMessage[]): string {
     .join('\n')
 }
 
+/**
+ * 生成进度事件（驱动左栏"思考中"面板）。
+ * - stage/label：当前处理阶段（调用 LLM / 校验 / 沙箱运行 / 修复…）。
+ * - reasoningDelta：模型思考链的增量文字（仅 stage='llm' 时多次出现），前端累加展示。
+ */
+export type LlmGenStage = 'llm' | 'validate' | 'sandbox' | 'repair'
+
+export interface LlmProgressEvent {
+  stage: LlmGenStage
+  label: string
+  reasoningDelta?: string
+}
+
+export type LlmProgressCb = (event: LlmProgressEvent) => void
+
 function createMessage(partial: Omit<AssistantMessage, 'id' | 'role' | 'createdAt'>): AssistantMessage {
   return { id: uid('assistant'), role: 'assistant', createdAt: Date.now(), ...partial }
 }
@@ -46,9 +62,26 @@ function infoMessage(
   return createMessage({ responseText, reasoningSummary, plan, modificationSummary, ...extra })
 }
 
+/** 错误回灌自修复的最大重试次数（含首次共调用 MAX_REPAIR+1 次 LLM） */
+const MAX_REPAIR = 2
+
+/** 构造"回灌错误 + 失败代码"的修复请求消息 */
+function buildRepairUserMessage(failedCode: string, error: string, attempt: number): LlmChatMessage {
+  return {
+    role: 'user',
+    content:
+      `你上一轮返回的 sceneCode 在沙箱运行时报错（第 ${attempt} 次尝试）：\n` +
+      `错误：${error}\n\n` +
+      `常见原因：变量未声明、Three.js API 误用、括号/引号不匹配、引用了未定义的名字、组件未通过 ctx.components 调用、几何参数非法等。\n` +
+      `请定位并修复该错误，返回【完整的、修正后的】 createScene(THREE, ctx) 代码。保持原有场景意图与对象 id。按输出协议返回严格 JSON。\n\n` +
+      `出错的代码：\n"""\n${failedCode}\n"""`,
+  }
+}
+
 export async function handleLlmUserInput(
   userInput: string,
   history: ChatMessage[],
+  onProgress?: LlmProgressCb,
 ): Promise<AssistantMessage> {
   // 临时诊断：浏览器 Console 可见客户端实际读到的配置
   console.log('[llm] 发送时检测：isLlmConfigured =', isLlmConfigured(), '| model =', getLlmConfig().model)
@@ -63,10 +96,10 @@ export async function handleLlmUserInput(
     )
   }
 
-  // 组装三层消息
-  const messages: LlmChatMessage[] = [
+  // 组装三层基础消息（每轮修复都基于它 + 一条修复消息）
+  const baseMessages: LlmChatMessage[] = [
     buildSystemMessage(),
-    buildDeveloperMessage({ components: [], externalModels: [] }),
+    buildDeveloperMessage({ components: getComponentSummary(), externalModels: [] }),
     buildUserMessage({
       userInput,
       currentSceneCode: currentSceneCode.value,
@@ -75,79 +108,115 @@ export async function handleLlmUserInput(
     }),
   ]
 
-  // 调用 LLM
-  let rawContent: string
-  try {
-    const response = await callLlm({ messages })
-    rawContent = response.content
-  } catch (error) {
-    return infoMessage(
-      'LLM 调用失败。',
-      '请求 LLM 接口时出错。',
-      '-',
-      '无改动。',
-      { error: error instanceof Error ? error.message : String(error) },
-    )
-  }
+  let lastError = ''
+  let lastFailedCode = ''
 
-  // 解析 + 校验
-  const validated = parseAndValidate(rawContent)
-  if (!validated.ok) {
-    console.log('[llm] 校验失败，原始返回（前 1000 字符）：\n', rawContent.slice(0, 1000))
-    return infoMessage(
-      'LLM 返回未通过校验，未运行代码（原始返回已打印到浏览器 Console，可查看）。',
-      '解析或校验 LLM 返回失败。',
-      '-',
-      '无改动。',
-      { error: validated.error },
-    )
-  }
+  for (let attempt = 0; attempt <= MAX_REPAIR; attempt += 1) {
+    const messages = attempt === 0
+      ? baseMessages
+      : [...baseMessages, buildRepairUserMessage(lastFailedCode, lastError, attempt)]
 
-  const { output, notes } = validated
-
-  // 追问优先：需求不明确时不应用 sceneCode
-  if (output.clarificationQuestion) {
-    return infoMessage(
-      `需要澄清：${output.clarificationQuestion}`,
-      output.reasoningSummary,
-      output.plan,
-      '无改动（等待澄清）。',
-      { warnings: notes.length ? notes : undefined },
-    )
-  }
-
-  // 沙箱运行 sceneCode（成功才提交，失败保留上一版）
-  const result = await runSceneCode(output.sceneCode)
-  if (!result.ok) {
-    return infoMessage(
-      '运行 LLM 生成的场景代码失败，已保留上一版。',
-      output.reasoningSummary,
-      output.plan,
-      `未应用：${result.error}`,
-      { error: result.error, warnings: output.warnings },
-    )
-  }
-
-  // 运行成功：expectedObjects 与实际 DSL 比对（只读校验）
-  const warnings: string[] = [...notes]
-  if (output.warnings) warnings.push(...output.warnings)
-  const expectedIds = output.expectedObjects
-    .filter((o) => o.action !== 'delete')
-    .map((o) => o.id)
-  if (expectedIds.length > 0) {
-    const actualIds = collectDslIds(currentExtractedDSL.value)
-    const missing = expectedIds.filter((id) => !actualIds.has(id))
-    if (missing.length > 0) {
-      warnings.push(`expectedObjects 与提取结果不符（未出现）：${missing.join('、')}`)
+    // 1) 调用 LLM（流式：逐段上报推理增量 + 阶段）
+    const llmStage: LlmProgressEvent =
+      attempt === 0
+        ? { stage: 'llm', label: '调用 LLM 生成中…' }
+        : { stage: 'repair', label: `第 ${attempt} 次自动修复中…` }
+    onProgress?.(llmStage)
+    let rawContent: string
+    try {
+      const response = await callLlmStream({
+        messages,
+        onChunk: (chunk) => {
+          if (chunk.reasoning) {
+            onProgress?.({ ...llmStage, reasoningDelta: chunk.reasoning })
+          }
+        },
+      })
+      rawContent = response.content
+    } catch (error) {
+      return infoMessage(
+        'LLM 调用失败。',
+        '请求 LLM 接口时出错。',
+        '-',
+        '无改动。',
+        { error: error instanceof Error ? error.message : String(error) },
+      )
     }
+
+    // 2) 解析 + 校验
+    onProgress?.({ stage: 'validate', label: '校验返回…' })
+    const validated = parseAndValidate(rawContent)
+    if (!validated.ok) {
+      console.log('[llm] 校验失败，原始返回（前 1000 字符）：\n', rawContent.slice(0, 1000))
+      return infoMessage(
+        'LLM 返回未通过校验，未运行代码（原始返回已打印到浏览器 Console，可查看）。',
+        '解析或校验 LLM 返回失败。',
+        '-',
+        '无改动。',
+        { error: validated.error },
+      )
+    }
+
+    const { output, notes } = validated
+
+    // 3) 追问优先：需求不明确时不应用 sceneCode（不进入修复循环）
+    if (output.clarificationQuestion) {
+      return infoMessage(
+        `需要澄清：${output.clarificationQuestion}`,
+        output.reasoningSummary,
+        output.plan,
+        '无改动（等待澄清）。',
+        { warnings: notes.length ? notes : undefined },
+      )
+    }
+
+    // 4) 沙箱运行 sceneCode（成功才提交，失败保留上一版画面）
+    onProgress?.({ stage: 'sandbox', label: '沙箱运行并提取场景…' })
+    const result = await runSceneCode(output.sceneCode)
+    if (result.ok) {
+      const warnings: string[] = [...notes]
+      if (attempt > 0) warnings.push(`已自动修复（第 ${attempt} 次重试后运行成功）`)
+      if (output.warnings) warnings.push(...output.warnings)
+
+      const expectedIds = output.expectedObjects
+        .filter((o) => o.action !== 'delete')
+        .map((o) => o.id)
+      if (expectedIds.length > 0) {
+        const actualIds = collectDslIds(currentExtractedDSL.value)
+        const missing = expectedIds.filter((id) => !actualIds.has(id))
+        if (missing.length > 0) {
+          warnings.push(`expectedObjects 与提取结果不符（未出现）：${missing.join('、')}`)
+        }
+      }
+
+      const responseText = attempt > 0
+        ? `${output.responseText}\n（注：经第 ${attempt} 次自动修复后运行成功）`
+        : output.responseText
+
+      return infoMessage(
+        responseText,
+        output.reasoningSummary,
+        output.plan,
+        output.modificationSummary,
+        { warnings: warnings.length > 0 ? warnings : undefined },
+      )
+    }
+
+    // 5) 运行失败：记录错误与失败代码，进入下一轮修复
+    console.log(`[llm] 第 ${attempt + 1} 次运行失败：${result.error}`)
+    console.log('[llm] 失败的 sceneCode（前 2000 字符）：\n', output.sceneCode.slice(0, 2000))
+    lastError = result.error
+    lastFailedCode = output.sceneCode
   }
 
+  // 6) 自修复仍失败：放弃，保留上一版
+  console.log(`[llm] 已尝试 ${MAX_REPAIR} 次自修复仍失败，保留上一版`)
   return infoMessage(
-    output.responseText,
-    output.reasoningSummary,
-    output.plan,
-    output.modificationSummary,
-    { warnings: warnings.length > 0 ? warnings : undefined },
+    `运行 LLM 生成的场景代码失败，已尝试 ${MAX_REPAIR} 次自动修复仍未通过，保留上一版。（失败的 sceneCode 见浏览器 Console）`,
+    '代码多次运行报错。',
+    '-',
+    `未应用：${lastError}`,
+    { error: lastError },
   )
 }
 
