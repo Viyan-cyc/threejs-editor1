@@ -43,6 +43,18 @@ const COMPONENT_SPEC = `【自定义组件使用规范】
 - 把组件当作黑盒：只调用它，不要重建其内部结构、也不要给它的内部子件单独写 userData。
 - 若不匹配任何已注册组件，再用 primitive / lowPolyComposite 自行拼装。`
 
+const HUNYUAN_SPEC = `【腾讯混元3D 模型生成（按需 · 仅用户显式触发）】
+- 默认【不使用】混元：所有对象一律用 primitive / lowPolyComposite / ctx.components 几何拼装。
+- 仅当用户本轮输入【明确要求】用 AI/混元生成模型时（出现"用混元""AI 生成""AI 建模""生成 3D 模型""做成真实/高精度模型"等意图，且针对具体对象），才为该对象在 hunyuanRequests 里声明一项；【其余对象仍走几何体】。
+- 不要因物体"看起来复杂/写实"就自行启用——以用户是否明确要求为准。
+- hunyuanRequests 每项：{ key, prompt }（key 建议与对象 id 一致；prompt 为中文生成描述，越具体越好，≤1024 字）。可选 enablePbr(默认 true)/faceCount/generateType。
+- 主进程会在运行前预生成 GLB 并注入沙箱；createScene 内用 await ctx.getModel(key) 取得（返回 THREE.Object3D 或 null）。
+- 【兜底强制】凡声明了 hunyuanRequests 的 key，sceneCode 必须这样写：
+    const obj = await ctx.getModel('<key>');
+    if (obj) { obj.userData = { id, name, type: 'externalModel' }; /* 设 position/rotation/scale */; scene.add(obj); }
+    else { /* 几何体兜底：同 id 的 BoxGeometry + MeshStandardMaterial，保证场景可见 */ }
+- 因此 createScene 需声明为 async（function 前加 async 即可，宿主会 await；纯几何场景不受影响）。`
+
 const SAFETY = `【安全红线（docs/05 §7）】
 sceneCode 会在沙箱内执行。禁止包含：eval / new Function / 动态 import() / fetch / XMLHttpRequest / WebSocket / EventSource / sendBeacon / Worker / localStorage / sessionStorage / indexedDB / postMessage / setTimeout / setInterval。
 允许用 document.createElement('canvas') 等做 CanvasTexture；其余构建场景对象并返回 { scene, camera } 即可。不要发网络请求。`
@@ -56,6 +68,7 @@ const OUTPUT_FORMAT = `【输出格式】
 - sceneCode: 新的完整 createScene(THREE, ctx) 代码字符串（【必填】，核心产物）
 - expectedObjects: [{id, name?, type?, action:'create'|'update'|'delete'|'move'}]（必填）
 - usedAssets?: {components:[{name,props?}], externalModels:[{name?,url,format?}]}
+- hunyuanRequests?: [{key, prompt, enablePbr?, faceCount?, generateType?}]（仅当用户明确要求用混元/AI 生成时声明）
 - warnings?: string[]（风险/降级/无法满足）
 - clarificationQuestion?: 当需求不明确时追问（给出时可不提供 sceneCode）
 - optionalExpectedDSL?: 期望提取出的 DSL（仅校验参考，不要当作场景输入）
@@ -76,6 +89,7 @@ export function buildDeveloperMessage(ctx: DeveloperContext): ChatMessage {
   const lines: string[] = []
   lines.push(CODE_SPEC)
   lines.push(COMPONENT_SPEC)
+  lines.push(HUNYUAN_SPEC)
   lines.push(USERDATA_SPEC)
   lines.push(SAFETY)
   lines.push('【能力范围】primitives / groups / lowPolyComposite / standardMaterials / textures(CanvasTexture) / animations：允许。customShaders：暂不允许。')

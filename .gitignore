@@ -11,6 +11,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# 混元3D 生成的 GLB 产物（运行时落盘缓存，不入库）
+public/assets/generated/
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

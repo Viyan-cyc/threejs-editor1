@@ -15,6 +15,26 @@ export interface UsedAssets {
 }
 
 /**
+ * 混元3D 生成请求（LLM 声明本轮需要 AI 生成的高精度模型）。
+ *
+ * 主进程在 sandbox 运行前，按 prompt 调 POST /hunyuan3d/generate 生成 GLB，
+ * 把 ArrayBuffer 注入 sandbox；createScene 内用 ctx.getModel(key) 加载。
+ * 与 build/hunyuanMiddleware.ts 的 GenerateDSL 契约一致（prompt + 可选参数）。
+ */
+export interface HunyuanRequest {
+  /** sandbox 内 ctx.getModel(key) 的取用键；与 sceneCode 里引用一致，建议同对象 id */
+  key: string
+  /** 中文生成描述（文生3D），越具体越好，最多 1024 字符 */
+  prompt: string
+  /** 启用 PBR 材质，默认 true */
+  enablePbr?: boolean
+  /** 目标面数，默认 500000，范围 10000~1500000 */
+  faceCount?: number
+  /** 生成类型：Normal（默认）/ LowPoly / Geometry / Sketch */
+  generateType?: 'Normal' | 'LowPoly' | 'Geometry' | 'Sketch'
+}
+
+/**
  * LLM 结构化输出（与 docs/05 协议对齐）。
  *
  * 铁律：sceneCode 是唯一动作产物；不存在 nextDSL/驱动型 DSL 字段；
@@ -33,6 +53,8 @@ export interface LlmStructuredOutput {
   sceneCode: string
   /** 本轮预计生成/修改的对象 */
   expectedObjects: ExpectedObject[]
+  /** 本轮需要腾讯混元3D 生成的高精度模型（主进程预生成后注入 sandbox） */
+  hunyuanRequests?: HunyuanRequest[]
   /** 使用了哪些组件 / 外部模型 */
   usedAssets?: UsedAssets
   /** 风险 / 无法满足 / 降级说明 */

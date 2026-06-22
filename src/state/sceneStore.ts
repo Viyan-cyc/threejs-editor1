@@ -49,8 +49,14 @@ export function getSandboxIframe(): HTMLIFrameElement {
 
 /**
  * 执行一段 createScene 代码：静态检查 → 沙箱执行 → 提取 DSL → 提交（失败回滚）。
+ *
+ * opts.models：本轮预生成的混元 GLB（key → ArrayBuffer），run 前注入 iframe，
+ * 供 createScene 内 ctx.getModel(key) 加载。无则空场景代码照常运行。
  */
-export async function runSceneCode(code: string): Promise<ApplyResult> {
+export async function runSceneCode(
+  code: string,
+  opts?: { models?: Record<string, ArrayBuffer> },
+): Promise<ApplyResult> {
   // 1) 静态检查
   const violations = checkSceneCode(code)
   if (violations.length > 0) {
@@ -69,10 +75,14 @@ export async function runSceneCode(code: string): Promise<ApplyResult> {
     return { ok: false, error }
   }
 
-  // 2) 沙箱执行
+  // 2) 沙箱执行（先注入 GLB，再 run）
   sceneStatus.value = 'running'
   currentError.value = ''
-  const result = await ensureHost().run(code)
+  const host = ensureHost()
+  if (opts?.models && Object.keys(opts.models).length > 0) {
+    await host.setModels(opts.models)
+  }
+  const result = await host.run(code)
 
   if (!result.ok) {
     sceneStatus.value = 'error'

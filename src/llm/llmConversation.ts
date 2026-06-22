@@ -8,6 +8,7 @@ import {
   buildUserMessage,
 } from '@/llm/prompts'
 import { parseAndValidate } from '@/llm/validate'
+import { generateHunyuanModels } from '@/llm/hunyuanGenerate'
 import { getComponentSummary } from '@/scene-components/registry'
 import { currentExtractedDSL, currentSceneCode, runSceneCode } from '@/state/sceneStore'
 
@@ -38,7 +39,7 @@ function summarizeHistory(history: ChatMessage[]): string {
  * - stage/label：当前处理阶段（调用 LLM / 校验 / 沙箱运行 / 修复…）。
  * - reasoningDelta：模型思考链的增量文字（仅 stage='llm' 时多次出现），前端累加展示。
  */
-export type LlmGenStage = 'llm' | 'validate' | 'sandbox' | 'repair'
+export type LlmGenStage = 'llm' | 'validate' | 'generate' | 'sandbox' | 'repair'
 
 export interface LlmProgressEvent {
   stage: LlmGenStage
@@ -111,6 +112,10 @@ export async function handleLlmUserInput(
   let lastError = ''
   let lastFailedCode = ''
 
+  // 本轮混元模型缓存（key → ArrayBuffer）：同 key 只生成一次，自动修复轮复用，不重复调混元。
+  // 注入用结构化克隆（非 Transferable），buffer 在主进程保留，可供多轮注入复用。
+  const roundModels: Record<string, ArrayBuffer> = {}
+
   for (let attempt = 0; attempt <= MAX_REPAIR; attempt += 1) {
     const messages = attempt === 0
       ? baseMessages
@@ -170,9 +175,31 @@ export async function handleLlmUserInput(
       )
     }
 
+    // 3b) 预生成混元模型（仅用户显式要求时 output.hunyuanRequests 非空）：
+    //     只对「本轮尚未生成」的 key 调混元；已生成的复用 roundModels（修复轮不重复调混元）。
+    //     失败的 key 不注入 → createScene 走几何兜底分支。
+    const hunyuanRequests = output.hunyuanRequests ?? []
+    const newRequests = hunyuanRequests.filter((r) => !(r.key in roundModels))
+    if (newRequests.length > 0) {
+      const gen = await generateHunyuanModels(newRequests, (label) => {
+        onProgress?.({ stage: 'generate', label })
+      })
+      for (const key of Object.keys(gen.models)) roundModels[key] = gen.models[key]
+      for (const f of gen.failures) notes.push(`混元生成失败（${f.key}）：${f.reason}，已用几何兜底`)
+    }
+    // 本轮注入：LLM 本次声明的 key 中，已成功生成的子集（复用 roundModels 缓存）
+    const preloadedModels: Record<string, ArrayBuffer> = {}
+    for (const r of hunyuanRequests) {
+      if (r.key in roundModels) preloadedModels[r.key] = roundModels[r.key]
+    }
+    // 【临时诊断】定位"生成成功但注入失败"；验证后移除
+    console.log('[hy] LLM 声明 hunyuanRequests keys:', hunyuanRequests.map((r) => r.key),
+      '| roundModels keys:', Object.keys(roundModels),
+      '| 本轮注入 preloadedModels keys:', Object.keys(preloadedModels))
+
     // 4) 沙箱运行 sceneCode（成功才提交，失败保留上一版画面）
     onProgress?.({ stage: 'sandbox', label: '沙箱运行并提取场景…' })
-    const result = await runSceneCode(output.sceneCode)
+    const result = await runSceneCode(output.sceneCode, { models: preloadedModels })
     if (result.ok) {
       const warnings: string[] = [...notes]
       if (attempt > 0) warnings.push(`已自动修复（第 ${attempt} 次重试后运行成功）`)

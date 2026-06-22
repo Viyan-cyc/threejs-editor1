@@ -13,12 +13,14 @@
 export type MainToSandbox =
   | { type: 'run'; runId: number; code: string }
   | { type: 'dispose' }
+  | { type: 'inject-assets'; models: Record<string, ArrayBuffer> }
 
 // ===== iframe -> 主应用 =====
 export type SandboxToMain =
   | { type: 'runtime-ready' }
   | { type: 'ready'; runId: number; snapshot: SceneSnapshot }
   | { type: 'error'; runId: number; message: string; stack?: string }
+  | { type: 'assets-ready' }
 
 // ===== 场景快照（iframe 内对运行后 Object3D 的纯结构化序列化） =====
 export interface SnapshotMaterial {

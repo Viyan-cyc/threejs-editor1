@@ -97,6 +97,29 @@ export class SceneSandboxHost {
     this.el.contentWindow?.postMessage(message, '*')
   }
 
+  /**
+   * 注入本轮预生成的混元 GLB（主进程生成的 ArrayBuffer）。
+   * 必须在 run() 之前调用：iframe 收到后存入 window.__preloadedModels 并回 assets-ready，
+   * createScene 内 ctx.getModel(key) 才能取到。
+   * 用结构化克隆（非 Transferable）：主进程保留 buffer，供自动修复多轮复用同 key，不重复调混元/下载。
+   */
+  async setModels(models: Record<string, ArrayBuffer>): Promise<void> {
+    await this.readyPromise
+    console.log('[hy] setModels → iframe inject-assets，keys:', Object.keys(models)) // 【临时诊断】
+    this.el.contentWindow?.postMessage({ type: 'inject-assets', models }, '*')
+    await new Promise<void>((resolve) => {
+      const handler = (event: MessageEvent): void => {
+        if (event.source !== this.el.contentWindow) return
+        if (event.data?.type === 'assets-ready') {
+          console.log('[hy] iframe ← assets-ready（注入完成）') // 【临时诊断】
+          window.removeEventListener('message', handler)
+          resolve()
+        }
+      }
+      window.addEventListener('message', handler)
+    })
+  }
+
   dispose(): void {
     window.removeEventListener('message', this.handleMessage)
     if (this.current) {

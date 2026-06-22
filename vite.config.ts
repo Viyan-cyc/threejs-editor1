@@ -1,6 +1,7 @@
 import { fileURLToPath, URL } from 'node:url'
 import { loadEnv, defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { installHunyuanMiddleware } from './build/hunyuanMiddleware'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -18,8 +19,25 @@ export default defineConfig(({ mode }) => {
 
   const proxyHeaders: Record<string, string> = llmApiKey ? { Authorization: `Bearer ${llmApiKey}` } : {}
 
+  // 混元3D dev middleware：拦截 POST /hunyuan3d/generate，spawn 混元 skill 生成 GLB 落盘。
+  // envVars 由 loadEnv(mode, cwd, '') 加载，含不带 VITE_ 前缀的 TENCENTCLOUD_* 密钥（仅 Node 侧用）。
+  const publicDir = fileURLToPath(new URL('./public', import.meta.url))
+  const skillScriptsDir = fileURLToPath(
+    new URL('./.claude/skills/hy-3d-generation-1.0.0/scripts', import.meta.url),
+  )
+
   return {
-    plugins: [vue()],
+    plugins: [
+      vue(),
+      // 必须作为 plugins[] 里的插件对象（configureServer hook）；若放进 server:{} 则永不注册。
+      {
+        name: 'hunyuan-3d-middleware',
+        configureServer(server) {
+          installHunyuanMiddleware(server, { publicDir, skillScriptsDir, env: envVars })
+          console.log('[vite] 混元3D middleware 已注册：POST /hunyuan3d/generate')
+        },
+      },
+    ],
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),

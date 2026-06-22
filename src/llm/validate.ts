@@ -1,4 +1,4 @@
-import type { LlmStructuredOutput, ValidateResult, ExpectedObject } from '@/types/llm'
+import type { LlmStructuredOutput, ValidateResult, ExpectedObject, HunyuanRequest } from '@/types/llm'
 import { checkSceneCode } from '@/sandbox/protocol'
 
 /**
@@ -86,6 +86,26 @@ export function parseAndValidate(rawContent: string): ValidateResult {
   }
   if (isObject(parsed.usedAssets)) {
     output.usedAssets = parsed.usedAssets as LlmStructuredOutput['usedAssets']
+  }
+  // hunyuanRequests（用户显式要求 AI 生成的模型）：过滤 key+prompt 合法项
+  if (Array.isArray(parsed.hunyuanRequests)) {
+    const valid: HunyuanRequest[] = []
+    for (const item of parsed.hunyuanRequests) {
+      if (!isObject(item)) continue
+      if (typeof item.key !== 'string' || item.key.trim() === '') continue
+      if (typeof item.prompt !== 'string' || item.prompt.trim() === '') continue
+      const gt = item.generateType
+      valid.push({
+        key: item.key,
+        prompt: item.prompt,
+        enablePbr: typeof item.enablePbr === 'boolean' ? item.enablePbr : undefined,
+        faceCount: typeof item.faceCount === 'number' ? item.faceCount : undefined,
+        generateType:
+          gt === 'Normal' || gt === 'LowPoly' || gt === 'Geometry' || gt === 'Sketch' ? gt : undefined,
+      })
+    }
+    if (valid.length > 0) output.hunyuanRequests = valid
+    else if (parsed.hunyuanRequests.length > 0) notes.push('hunyuanRequests 存在但无合法项，已忽略')
   }
   if (parsed.optionalExpectedDSL !== undefined) {
     output.optionalExpectedDSL = parsed.optionalExpectedDSL as LlmStructuredOutput['optionalExpectedDSL']

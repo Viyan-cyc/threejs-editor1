@@ -14,7 +14,7 @@ export function buildSandboxRuntimeHtml(): string {
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-eval' 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none';" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-eval' 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline'; img-src data: blob:; connect-src blob:;" />
 <style>html,body{margin:0;height:100%;overflow:hidden}canvas{display:block}</style>
 </head>
 <body>
@@ -29,12 +29,31 @@ export function buildSandboxRuntimeHtml(): string {
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // 组件工厂 bootstrap：在 THREE 作用域构建 ctx.components（见 registry.componentBootstrapSource）
 ${componentBootstrapSource()}
 
 const host = parent;
 let renderer = null, controls = null, currentScene = null, currentCamera = null, raf = 0, resizeHandler = null;
+
+// 混元 GLB 注入：主进程预生成后经 postMessage 'inject-assets' 把 ArrayBuffer 注入 window.__preloadedModels；
+// createScene 内用 ctx.getModel(key) 经 GLTFLoader.parse 解析（纯内存，不触网、不被静态检查拦）。
+// 混元产物无 Draco/meshopt 压缩，裸 GLTFLoader 可直接 parse。
+const __gltfLoader = new GLTFLoader();
+let __parsedCache = {};
+window.__preloadedModels = {};
+async function __getModel(key) {
+  var buf = window.__preloadedModels && window.__preloadedModels[key];
+  console.log('[hy][iframe] getModel("' + key + '") 库存 keys:', Object.keys(window.__preloadedModels || {}), '命中:', !!buf); // 【临时诊断】
+  if (!buf) return null;                       // 未注入 / 生成失败 → null，createScene 走几何兜底
+  if (__parsedCache[key]) return __parsedCache[key].clone(true);
+  var gltf = await new Promise(function (resolve, reject) {
+    __gltfLoader.parse(buf, '', resolve, reject);
+  });
+  __parsedCache[key] = gltf.scene;
+  return gltf.scene.clone(true);
+}
 
 function cloneSimple(obj) {
   const out = {};
@@ -141,15 +160,16 @@ function disposeCurrent() {
   }
 }
 
-function run(code, runId) {
+async function run(code, runId) {
   // 关键：先构建新场景，成功才切换并回收旧的；失败则原样保留旧场景（不黑屏）
+  // createScene 可为 async（如 await ctx.getModel 内部 GLTFLoader.parse）；await 对同步返回兼容。
   let newScene, newCamera;
   try {
-    const ctx = { components: __buildComponents(THREE) };
+    const ctx = { components: __buildComponents(THREE), getModel: __getModel };
     const build = new Function('THREE', 'ctx', String(code) + '\\n;return createScene(THREE, ctx);');
-    const built = build(THREE, ctx);
-    newScene = built.scene;
-    newCamera = built.camera;
+    const built = await build(THREE, ctx);
+    newScene = built && built.scene;
+    newCamera = built && built.camera;
     if (!newScene || !newCamera) throw new Error('createScene 未返回 { scene, camera }');
   } catch (err) {
     // 失败：保留旧场景与渲染，不黑屏；仅回传错误
@@ -177,6 +197,13 @@ window.addEventListener('message', function (e) {
   if (!data || typeof data !== 'object') return;
   if (data.type === 'run') run(data.code, data.runId);
   else if (data.type === 'dispose') disposeCurrent();
+  else if (data.type === 'inject-assets') {
+    // 主进程注入本轮预生成的 GLB ArrayBuffer；清缓存强制按新数据重 parse
+    window.__preloadedModels = data.models || {};
+    __parsedCache = {};
+    console.log('[hy][iframe] 收到 inject-assets，keys:', Object.keys(window.__preloadedModels)); // 【临时诊断】
+    host.postMessage({ type: 'assets-ready' }, '*');
+  }
 });
 
 host.postMessage({ type: 'runtime-ready' }, '*');
