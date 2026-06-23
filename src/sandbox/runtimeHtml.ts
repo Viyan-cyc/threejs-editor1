@@ -45,7 +45,6 @@ let __parsedCache = {};
 window.__preloadedModels = {};
 async function __getModel(key) {
   var buf = window.__preloadedModels && window.__preloadedModels[key];
-  console.log('[hy][iframe] getModel("' + key + '") 库存 keys:', Object.keys(window.__preloadedModels || {}), '命中:', !!buf); // 【临时诊断】
   if (!buf) return null;                       // 未注入 / 生成失败 → null，createScene 走几何兜底
   if (__parsedCache[key]) return __parsedCache[key].clone(true);
   var gltf = await new Promise(function (resolve, reject) {
@@ -201,7 +200,6 @@ window.addEventListener('message', function (e) {
     // 主进程注入本轮预生成的 GLB ArrayBuffer；清缓存强制按新数据重 parse
     window.__preloadedModels = data.models || {};
     __parsedCache = {};
-    console.log('[hy][iframe] 收到 inject-assets，keys:', Object.keys(window.__preloadedModels)); // 【临时诊断】
     host.postMessage({ type: 'assets-ready' }, '*');
   }
 });

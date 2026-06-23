@@ -192,10 +192,6 @@ export async function handleLlmUserInput(
     for (const r of hunyuanRequests) {
       if (r.key in roundModels) preloadedModels[r.key] = roundModels[r.key]
     }
-    // 【临时诊断】定位"生成成功但注入失败"；验证后移除
-    console.log('[hy] LLM 声明 hunyuanRequests keys:', hunyuanRequests.map((r) => r.key),
-      '| roundModels keys:', Object.keys(roundModels),
-      '| 本轮注入 preloadedModels keys:', Object.keys(preloadedModels))
 
     // 4) 沙箱运行 sceneCode（成功才提交，失败保留上一版画面）
     onProgress?.({ stage: 'sandbox', label: '沙箱运行并提取场景…' })

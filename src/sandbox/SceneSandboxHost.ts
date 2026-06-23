@@ -105,13 +105,11 @@ export class SceneSandboxHost {
    */
   async setModels(models: Record<string, ArrayBuffer>): Promise<void> {
     await this.readyPromise
-    console.log('[hy] setModels → iframe inject-assets，keys:', Object.keys(models)) // 【临时诊断】
     this.el.contentWindow?.postMessage({ type: 'inject-assets', models }, '*')
     await new Promise<void>((resolve) => {
       const handler = (event: MessageEvent): void => {
         if (event.source !== this.el.contentWindow) return
         if (event.data?.type === 'assets-ready') {
-          console.log('[hy] iframe ← assets-ready（注入完成）') // 【临时诊断】
           window.removeEventListener('message', handler)
           resolve()
         }

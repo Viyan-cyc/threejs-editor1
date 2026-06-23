@@ -55,19 +55,14 @@ export async function generateHunyuanModels(
         } catch {
           /* 响应非 JSON，保留 status */
         }
-        console.log('[hy-gen] key=' + req.key + ' POST 失败 →', res.status, detail) // 【临时诊断】
         failures.push({ key: req.key, reason: detail })
         continue
       }
       const buf = await res.arrayBuffer()
+      // magic 校验：真 GLB 前4字节必为 'glTF'(67 6c 54 46)。判失败不缓存 → getModel 取不到 → 走几何兜底。
       const magic = Array.from(new Uint8Array(buf).slice(0, 4))
         .map((b) => b.toString(16).padStart(2, '0'))
         .join(' ')
-      console.log('[hy-gen] key=' + req.key + ' POST →', res.status,
-        '| cached:', res.headers.get('x-hunyuan-cached'),
-        '| buf', buf.byteLength, '字节 magic:', magic,
-        magic === '67 6c 54 46' ? '(真GLB ✓)' : '(非GLB ✗)') // 【临时诊断】
-      // magic 校验：真 GLB 前4字节必为 'glTF'(67 6c 54 46)。判失败不缓存 → getModel 取不到 → 走几何兜底。
       if (magic !== '67 6c 54 46') {
         failures.push({ key: req.key, reason: `GLB 内容非法 magic=${magic}（响应非 GLB 二进制）` })
         continue
