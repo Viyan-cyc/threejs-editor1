@@ -31,8 +31,10 @@ export interface LlmStreamOptions extends CallLlmOptions {
  */
 
 export interface LlmConfig {
-  /** 模型名（非敏感，客户端可见） */
+  /** 主模型名（coding，非敏感，客户端可见） */
   model: string
+  /** 视觉模型名（图生描述，非敏感）；未配置则 undefined */
+  visionModel?: string
 }
 
 function env(key: string): string {
@@ -41,12 +43,27 @@ function env(key: string): string {
 }
 
 export function getLlmConfig(): LlmConfig {
-  return { model: env('VITE_LLM_MODEL') }
+  const visionModel = env('VITE_LLM_VISION_MODEL')
+  return { model: env('VITE_LLM_MODEL'), visionModel: visionModel || undefined }
 }
 
 /** 是否已配置（客户端视角：仅需模型名） */
 export function isLlmConfigured(): boolean {
   return getLlmConfig().model.length > 0
+}
+
+/**
+ * fetch 包装：对 429（限流，如智谱 1305「该模型当前访问量过大」）按指数退避自动重试。
+ * 其他状态码原样返回由调用方处理；网络层错误抛出由调用方 catch。
+ * 自动修复循环会在短时间连发多次主模型请求，易撞速率上限，重试可吸收大部分瞬时 429。
+ */
+async function fetchWithRetry(input: RequestInfo, init: RequestInit, maxRetries = 3): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch(input, init)
+    if (resp.status !== 429 || attempt >= maxRetries) return resp
+    const wait = 1500 * Math.pow(2, attempt) // 1.5s → 3s → 6s
+    await new Promise((r) => setTimeout(r, wait))
+  }
 }
 
 /**
@@ -61,7 +78,7 @@ export async function callLlm(options: CallLlmOptions): Promise<LlmRawResponse> 
 
   let response: Response
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithRetry(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -106,7 +123,7 @@ export async function callLlmStream(options: LlmStreamOptions): Promise<LlmRawRe
 
   let response: Response
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithRetry(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -197,4 +214,81 @@ export async function callLlmStream(options: LlmStreamOptions): Promise<LlmRawRe
     throw new Error('LLM 返回格式异常：未收到任何 content 增量')
   }
   return { content }
+}
+
+// ===================== 视觉模型（双模型：图 → 文字描述）=====================
+
+/** 视觉提示词：让视觉模型输出便于主模型用 Three.js 重建的客观描述 */
+const VISION_PROMPT =
+  '你是 3D 场景重建助手。客观描述这张/这些图片，重点：有哪些物体、各自的位置与布局、颜色、材质、风格、大致尺寸关系，以便另一个 AI 据此用 Three.js 重建 3D 场景。只描述可见内容，不要臆测，不要复述本指令。'
+
+/** File → base64 data URL（视觉模型 image_url 接受 data URI） */
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error(`读取图片失败：${file.name}`))
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
+ * 调视觉模型把图片转成文字描述（双模型预处理）。
+ *
+ * 走同源 `/api/vision/chat/completions`（由 Vite 代理转发到 LLM_VISION_BASE_URL=paas/v4，
+ * key 由代理服务端注入，不进浏览器）。非流式（描述作为一次性中间结果）。
+ *
+ * 失败抛错——由上层（llmConversation）捕获后降级为纯文字继续走主模型，不阻塞场景生成。
+ */
+export async function callVisionModel(images: File[]): Promise<string> {
+  const { visionModel } = getLlmConfig()
+  if (!visionModel) {
+    throw new Error('未配置视觉模型（VITE_LLM_VISION_MODEL）')
+  }
+  if (images.length === 0) {
+    throw new Error('无图片可解析')
+  }
+
+  const dataUrls = await Promise.all(images.map(fileToDataUrl))
+  const content: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  > = [
+    { type: 'text', text: VISION_PROMPT },
+    ...dataUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+  ]
+
+  let response: Response
+  try {
+    response = await fetchWithRetry('/api/vision/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: visionModel,
+        messages: [{ role: 'user', content }],
+      }),
+    })
+  } catch {
+    throw new Error('无法连接视觉模型代理（/api/vision）。请确认已配置 LLM_VISION_BASE_URL 且 dev 已重启。')
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try {
+      const e = (await response.json()) as { error?: { message?: string }; message?: string }
+      detail = e.error?.message ?? e.message ?? detail
+    } catch {
+      /* 响应非 JSON，保留 status */
+    }
+    throw new Error(`视觉模型调用失败：${detail}`)
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>
+  }
+  const desc = data.choices?.[0]?.message?.content
+  if (typeof desc !== 'string' || desc.trim() === '') {
+    throw new Error('视觉模型返回为空')
+  }
+  return desc.trim()
 }

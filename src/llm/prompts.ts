@@ -101,6 +101,8 @@ export function buildDeveloperMessage(ctx: DeveloperContext): ChatMessage {
 
 export interface UserContext {
   userInput: string
+  /** 视觉模型对用户上传图片的描述（双模型预处理）；无图则 undefined */
+  imageDescription?: string
   currentSceneCode: string
   currentExtractedDSL: unknown
   conversationSummary: string
@@ -109,6 +111,9 @@ export interface UserContext {
 export function buildUserMessage(ctx: UserContext): ChatMessage {
   const lines: string[] = []
   lines.push(`用户本轮输入：\n${ctx.userInput}`)
+  if (ctx.imageDescription) {
+    lines.push(`参考图片描述（由视觉模型识别，请据此重建/补充场景）：\n${ctx.imageDescription}`)
+  }
   lines.push(`当前场景代码 currentSceneCode（基于它增量修改，保留已有 id）：\n"""\n${ctx.currentSceneCode}\n"""`)
   lines.push(`当前场景 DSL（只读上下文，用于理解现状，勿当输入源修改）：\n"""\n${JSON.stringify(ctx.currentExtractedDSL)}\n"""`)
   if (ctx.conversationSummary) {

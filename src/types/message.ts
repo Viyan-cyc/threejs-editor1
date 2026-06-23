@@ -8,6 +8,8 @@ export interface UserMessage {
   role: 'user'
   /** 用户输入的自然语言内容 */
   content: string
+  /** 用户上传的参考图（data URL 数组，仅用于 UI 历史展示；不回灌模型） */
+  images?: string[]
   /** 创建时间戳（ms） */
   createdAt: number
 }

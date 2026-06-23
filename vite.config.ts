@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
   const llmBaseUrl = envVars.LLM_BASE_URL ?? ''
   const llmApiKey = envVars.LLM_API_KEY ?? ''
   const clientModel = envVars.VITE_LLM_MODEL ?? ''
+  const visionBaseUrl = envVars.LLM_VISION_BASE_URL ?? ''
 
   // 启动诊断（不打印 key 明文）
   console.log('[llm] 启动配置：')
@@ -46,8 +47,15 @@ export default defineConfig(({ mode }) => {
     server: {
       // LLM 代理：浏览器 POST /api/llm/* → dev server 转发到 LLM_BASE_URL（服务端注入 key）
       proxy:
-        llmBaseUrl.length > 0
+        llmBaseUrl.length > 0 || visionBaseUrl.length > 0
           ? {
+              // 视觉模型代理（glm-4.5v @ paas/v4）；用 /api/vision 避免与 /api/llm 前缀冲突
+              '/api/vision': {
+                target: visionBaseUrl,
+                changeOrigin: true,
+                rewrite: (path) => path.replace(/^\/api\/vision/, ''),
+                headers: proxyHeaders,
+              },
               '/api/llm': {
                 target: llmBaseUrl,
                 changeOrigin: true,

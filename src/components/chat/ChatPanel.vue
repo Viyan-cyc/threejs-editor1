@@ -60,14 +60,29 @@ function onProgress(ev: LlmProgressEvent): void {
 
 onUnmounted(stopTimer)
 
-async function handleSend(content: string): Promise<void> {
+/** File → data URL（用户消息历史里展示缩略图用） */
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result as string)
+    r.onerror = () => reject(new Error(`读取图片失败：${file.name}`))
+    r.readAsDataURL(file)
+  })
+}
+
+async function handleSend(content: string, images?: File[]): Promise<void> {
   const trimmed = content.trim()
-  if (!trimmed || isPending.value) return
+  const hasImages = !!images?.length
+  if ((!trimmed && !hasImages) || isPending.value) return
+
+  // 用户上传的图转 data URL，随消息持久展示（不回灌模型）
+  const imageDataUrls = hasImages ? await Promise.all(images!.map(fileToDataUrl)) : undefined
 
   messages.value.push({
     id: uid('user'),
     role: 'user',
     content: trimmed,
+    images: imageDataUrls,
     createdAt: Date.now(),
   })
 
@@ -78,8 +93,8 @@ async function handleSend(content: string): Promise<void> {
   startTimer()
   const t0 = Date.now()
   try {
-    // 真实 LLM 编排（异步）：组装请求 → 调用 → 解析校验 → 沙箱运行 → 联动更新
-    const assistant = await handleLlmUserInput(trimmed, messages.value, onProgress)
+    // 真实 LLM 编排：有图时先视觉模型转描述，再主模型生成；解析校验 → 沙箱运行 → 联动更新
+    const assistant = await handleLlmUserInput(trimmed, messages.value, onProgress, images)
     // 记录本轮总耗时（ms），随消息持久保留，供左栏底部徽章展示
     assistant.generationMs = Date.now() - t0
     messages.value.push(assistant)

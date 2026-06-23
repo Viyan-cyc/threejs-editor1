@@ -8,7 +8,10 @@ defineProps<{ message: ChatMessage }>()
 <template>
   <!-- 用户消息 -->
   <div v-if="message.role === 'user'" class="message message--user">
-    <div class="bubble">{{ message.content }}</div>
+    <div v-if="message.images?.length" class="user-images">
+      <img v-for="(src, i) in message.images" :key="i" :src="src" class="user-image" alt="参考图" />
+    </div>
+    <div v-if="message.content" class="bubble">{{ message.content }}</div>
   </div>
 
   <!-- 系统消息：responseText + 思考摘要/执行计划/修改说明 + 可选 warnings/error（不含原始思考） -->
@@ -48,6 +51,22 @@ defineProps<{ message: ChatMessage }>()
 .message--user {
   align-self: flex-end;
   max-width: 85%;
+}
+
+.user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.user-image {
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
 .bubble {

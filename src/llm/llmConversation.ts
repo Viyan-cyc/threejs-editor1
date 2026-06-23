@@ -1,7 +1,7 @@
 import type { AssistantMessage, ChatMessage } from '@/types'
 import type { ChatMessage as LlmChatMessage } from '@/types/llm'
 import { uid } from '@/utils/id'
-import { callLlmStream, getLlmConfig, isLlmConfigured } from '@/llm/config'
+import { callLlmStream, getLlmConfig, isLlmConfigured, callVisionModel } from '@/llm/config'
 import {
   buildDeveloperMessage,
   buildSystemMessage,
@@ -39,7 +39,7 @@ function summarizeHistory(history: ChatMessage[]): string {
  * - stage/label：当前处理阶段（调用 LLM / 校验 / 沙箱运行 / 修复…）。
  * - reasoningDelta：模型思考链的增量文字（仅 stage='llm' 时多次出现），前端累加展示。
  */
-export type LlmGenStage = 'llm' | 'validate' | 'generate' | 'sandbox' | 'repair'
+export type LlmGenStage = 'llm' | 'validate' | 'vision' | 'generate' | 'sandbox' | 'repair'
 
 export interface LlmProgressEvent {
   stage: LlmGenStage
@@ -83,6 +83,7 @@ export async function handleLlmUserInput(
   userInput: string,
   history: ChatMessage[],
   onProgress?: LlmProgressCb,
+  images?: File[],
 ): Promise<AssistantMessage> {
   // 临时诊断：浏览器 Console 可见客户端实际读到的配置
   console.log('[llm] 发送时检测：isLlmConfigured =', isLlmConfigured(), '| model =', getLlmConfig().model)
@@ -97,12 +98,26 @@ export async function handleLlmUserInput(
     )
   }
 
+  // 【视觉模型预处理】用户带了图片时，先用视觉模型把图转成文字描述，再喂给主模型。
+  // 失败（未配置/余额不足/超时）→ 不阻塞，降级为纯文字继续走主模型。
+  let imageDescription: string | undefined
+  const visionWarnings: string[] = []
+  if (images && images.length > 0) {
+    onProgress?.({ stage: 'vision', label: `正在理解图片（${images.length} 张）…` })
+    try {
+      imageDescription = await callVisionModel(images)
+    } catch (err) {
+      visionWarnings.push(`图片理解失败：${err instanceof Error ? err.message : String(err)}，已按纯文字处理`)
+    }
+  }
+
   // 组装三层基础消息（每轮修复都基于它 + 一条修复消息）
   const baseMessages: LlmChatMessage[] = [
     buildSystemMessage(),
     buildDeveloperMessage({ components: getComponentSummary(), externalModels: [] }),
     buildUserMessage({
       userInput,
+      imageDescription,
       currentSceneCode: currentSceneCode.value,
       currentExtractedDSL: currentExtractedDSL.value,
       conversationSummary: summarizeHistory(history),
@@ -197,7 +212,7 @@ export async function handleLlmUserInput(
     onProgress?.({ stage: 'sandbox', label: '沙箱运行并提取场景…' })
     const result = await runSceneCode(output.sceneCode, { models: preloadedModels })
     if (result.ok) {
-      const warnings: string[] = [...notes]
+      const warnings: string[] = [...notes, ...visionWarnings]
       if (attempt > 0) warnings.push(`已自动修复（第 ${attempt} 次重试后运行成功）`)
       if (output.warnings) warnings.push(...output.warnings)
 
